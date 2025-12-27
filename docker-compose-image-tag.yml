@@ -6,16 +6,43 @@ x-superset-volumes:
   - superset_home:/app/superset_home
   - delta-volume:/delta # Allow Superset to see the data folder if needed locally
 
+# MTA Lakehouse Architecture
+#
+# Ingestion
+#   └─ polls MTA GTFS-Realtime
+#   └─ writes raw JSONL files
+#   └─ output → raw-volume (/data/raw)
+#
+# Marimo (Bronze / Silver processing)
+#   ├─ reads raw JSONL ← raw-volume
+#   ├─ transforms & enriches data
+#   └─ writes Delta Lake tables → delta-volume (/delta)
+#
+# Spark Thrift (delta-query)
+#   ├─ reads Delta tables from delta-volume
+#   ├─ uses Hive Metastore for table metadata
+#   └─ exposes SQL endpoint (HiveServer2 / Thrift)
+#
+# Superset (BI / Visualization)
+#   └─ connects to Spark Thrift / Hive
+#   └─ queries Delta tables for dashboards & charts
+#
+# Data flow:
+#   Ingestion → raw-volume → Marimo → delta-volume → Spark Thrift → Superset
+#
+# Volumes:
+#   raw-volume   : append-only raw ingestion (JSONL)
+#   delta-volume : curated Delta Lake tables
+
 services:
-  # --- YOUR DATA PIPELINE SERVICES ---
-  
   ingestion:
     image: ghcr.io/cynicdog/uptown-downtown/ingestion:latest
     container_name: mta_ingestion
     volumes:
-      - delta-volume:/app/data/delta
+      - raw-volume:/data/raw
     environment:
-      - DELTA_BASE_PATH=/app/data/delta
+      - RAW_BASE_PATH=/data/raw
+      - POLL_INTERVAL_SECONDS=30
     restart: on-failure
 
   hive-metastore-db:
@@ -49,9 +76,23 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/9083'"]
 
-  query:
+  marimo:
+    image: marimo:spark
+    container_name: marimo
+    ports:
+      - "8080:8080"
+    volumes:
+      - raw-volume:/data/raw
+      - delta-volume:/delta
+    environment:
+      - JAVA_HOME=/usr/lib/jvm/java-21-openjdk-arm64
+      - RAW_BASE_PATH=/data/raw
+      - DELTA_BASE_PATH=/delta
+    restart: unless-stopped
+
+  delta-query:
     image: apache/spark:3.5.1
-    container_name: mta_query
+    container_name: delta-query
     ports:
       - "10000:10000"
     volumes:
@@ -98,8 +139,6 @@ services:
     depends_on:
       superset-init:
         condition: service_completed_successfully
-      query:
-        condition: service_started
     volumes: *superset-volumes
     env_file:
       - path: docker/.env
@@ -136,6 +175,7 @@ services:
         required: true
 
 volumes:
+  raw-volume:
   delta-volume:
   superset_home:
   db_home: # Superset Metadata
