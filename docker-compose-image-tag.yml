@@ -1,4 +1,4 @@
-x-superset-image: &superset-image apachesuperset.docker.scarf.sh/apache/superset:${TAG:-latest-dev}
+x-superset-image: &superset-image apache/superset:6.0.0-dev
 x-superset-volumes:
   &superset-volumes
   - ./docker:/app/docker
